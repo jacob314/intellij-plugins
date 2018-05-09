@@ -13,6 +13,7 @@
 // limitations under the License.
 package com.jetbrains.lang.dart.ide.completion;
 
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.intellij.codeInsight.AutoPopupController;
 import com.intellij.codeInsight.CodeInsightSettings;
 import com.intellij.codeInsight.completion.*;
@@ -30,8 +31,10 @@ import com.intellij.lang.Language;
 import com.intellij.lang.html.HTMLLanguage;
 import com.intellij.lang.injection.InjectedLanguageManager;
 import com.intellij.lang.xml.XMLLanguage;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Pair;
 import com.intellij.openapi.util.TextRange;
@@ -44,10 +47,16 @@ import com.intellij.ui.LayeredIcon;
 import com.intellij.ui.RowIcon;
 import com.intellij.util.PlatformIcons;
 import com.intellij.util.ProcessingContext;
+import com.intellij.xdebugger.XDebugSession;
+import com.intellij.xdebugger.XDebuggerManager;
+import com.intellij.xdebugger.XSourcePosition;
+import com.intellij.xdebugger.evaluation.XDebuggerEvaluator;
+import com.intellij.xdebugger.frame.XValue;
 import com.jetbrains.lang.dart.DartLanguage;
 import com.jetbrains.lang.dart.DartYamlFileTypeFactory;
 import com.jetbrains.lang.dart.analyzer.DartAnalysisServerService;
 import com.jetbrains.lang.dart.ide.codeInsight.DartCodeInsightSettings;
+import com.jetbrains.lang.dart.ide.runner.server.vmService.frame.DartVmServiceValue;
 import com.jetbrains.lang.dart.psi.*;
 import com.jetbrains.lang.dart.sdk.DartSdk;
 import com.jetbrains.lang.dart.util.DartResolveUtil;
@@ -58,13 +67,64 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static com.intellij.patterns.PlatformPatterns.psiElement;
 import static com.intellij.patterns.PlatformPatterns.psiFile;
 import static com.intellij.patterns.StandardPatterns.or;
 
 public class DartServerCompletionContributor extends CompletionContributor {
+  static String UNIQUE_IMPORT_PREFIX = "SAFE_IMPORT_PREFIX";
+
+  /**
+   * Returns a possible safe to evaluate Dart expression to lookup the runtime
+   * type of an identifier for
+   */
+  @Nullable  String findSafeToEvaluateExpressionToResolveTypeFor(PsiElement element) {
+    while (element != null) {
+      if (element instanceof DartReferenceExpression && !(element.getParent() instanceof DartReferenceExpression)) {
+        DartReferenceExpression referenceExpression = (DartReferenceExpression) element;
+
+        String rawExpression = ((DartReferenceExpression)element).getText();
+        PsiElement leftChild = referenceExpression;
+        while (leftChild.getFirstChild() != null) {
+          leftChild = leftChild.getFirstChild();
+          if (leftChild instanceof DartId) {
+            return leftChild.getText();
+          }
+        }
+        return null;
+      }
+      element = element.getParent();
+    }
+    return null;
+  }
+
+  private static final long CHECK_CANCELLED_PERIOD = 10;
+  private static final long TESTS_TIMEOUT_COEFF = 10;
+  private static final long GET_AUTOCOMPLETE_EVAL_TIMEOUT = 100;
+
+  public static boolean awaitForLatchCheckingCanceled(@NotNull final CountDownLatch latch,
+                                                      long timeoutInMillis) {
+    if (ApplicationManager.getApplication().isUnitTestMode()) {
+      timeoutInMillis *= TESTS_TIMEOUT_COEFF;
+    }
+
+    long startTime = System.currentTimeMillis();
+    while (true) {
+      ProgressManager.checkCanceled();
+      if (timeoutInMillis != -1 && System.currentTimeMillis() > startTime + timeoutInMillis) {
+        return false;
+      }
+      if (Uninterruptibles.awaitUninterruptibly(latch, CHECK_CANCELLED_PERIOD, TimeUnit.MILLISECONDS)) {
+        return true;
+      }
+    }
+  }
+
   public DartServerCompletionContributor() {
     extend(CompletionType.BASIC,
            or(psiElement().withLanguage(DartLanguage.INSTANCE),
@@ -75,6 +135,8 @@ public class DartServerCompletionContributor extends CompletionContributor {
              protected void addCompletions(@NotNull final CompletionParameters parameters,
                                            @NotNull final ProcessingContext context,
                                            @NotNull final CompletionResultSet originalResultSet) {
+               final CountDownLatch latch = new CountDownLatch(1);
+
                VirtualFile file = DartResolveUtil.getRealVirtualFile(parameters.getOriginalFile());
                if (file instanceof VirtualFileWindow) {
                  file = ((VirtualFileWindow)file).getDelegate();
@@ -90,15 +152,115 @@ public class DartServerCompletionContributor extends CompletionContributor {
                  return;
                }
 
+               PsiElement targetElement = parameters.getOriginalFile().getContext();
+
                final DartSdk sdk = DartSdk.getDartSdk(project);
                if (sdk == null || !DartAnalysisServerService.isDartSdkVersionSufficient(sdk)) return;
 
                final DartAnalysisServerService das = DartAnalysisServerService.getInstance(project);
                das.updateFilesContent();
 
-               final int offset =
-                 InjectedLanguageManager.getInstance(project).injectedToHost(parameters.getOriginalFile(), parameters.getOffset());
-               final String completionId = das.completion_getSuggestions(file, offset);
+               PsiFile originalFile = parameters.getOriginalFile();
+               String completionId = null;
+               if (originalFile instanceof DartExpressionCodeFragment) {
+                 // Of we are dealing with a code fragment we
+                 DartExpressionCodeFragment codeFragment = (DartExpressionCodeFragment) originalFile;
+                 PsiElement target = codeFragment.getContext();
+                 if (target != null) {
+                   final PsiFile contextFile = target.getContainingFile();
+                   final int offsetInOriginal = target.getTextOffset();
+                   if (parameters.getOffset()== 0) {
+                     final int offset =
+                       InjectedLanguageManager.getInstance(project).injectedToHost(contextFile, offsetInOriginal);
+                     completionId = das.completion_getSuggestions(contextFile.getVirtualFile(), offset);
+                   } else {
+                     XDebugSession session = XDebuggerManager.getInstance(project).getCurrentSession();
+                     XDebuggerEvaluator evaluator = session.getDebugProcess().getEvaluator();
+                     String expressionToResolve = findSafeToEvaluateExpressionToResolveTypeFor(parameters.getPosition());
+                     List<SourceEdit> editList = new ArrayList();
+                     final DartVmServiceValue[] vmServiceValue = { null };
+                     if (evaluator != null && expressionToResolve != null) {
+                       System.out.println("XXX TORESOLVE=#" + expressionToResolve);
+                       evaluator.evaluate(expressionToResolve, new XDebuggerEvaluator.XEvaluationCallback() {
+                         @Override
+                         public void errorOccurred(@NotNull String errorMessage) {
+                           System.out.println("XXX got error:" + errorMessage);
+                           latch.countDown();
+                           // This is fine, the expression just couldn't be evaluated. Continue.
+                         }
+
+                         @Override
+                         public void evaluated(@NotNull XValue result) {
+                           if (result instanceof DartVmServiceValue) {
+                             vmServiceValue[0] = (DartVmServiceValue) result;
+                           }
+                           result.computeTypeSourcePosition((@Nullable XSourcePosition sourcePosition) -> {
+                             VirtualFile file = sourcePosition.getFile();
+                             System.out.println("XXX ZZZZ file = " +file.getPresentableUrl());
+                             //das.analysis_getImportedElements(contextFile)
+                             List<ImportedElements> importedElements = new ArrayList<>();
+                             importedElements.add(new ImportedElements(file.getPresentableUrl(), UNIQUE_IMPORT_PREFIX, new ArrayList<>()));
+                             SourceFileEdit edits = das.edit_importElements(contextFile.getVirtualFile(), importedElements);
+                             editList.addAll(edits.getEdits());
+                             for (SourceEdit edit : edits.getEdits()) {
+                               System.out.println(edit.getOffset() + "### " + edit.getReplacement());
+                             }
+                             latch.countDown();
+                             //das.edit_importElements()
+                           });
+                           System.out.println("XXX GOT result:" + result + " FOR " + expressionToResolve);
+                         }
+                       }, null);
+                     } else {
+                       // Nothing to do
+                       latch.countDown();
+                     }
+
+                     awaitForLatchCheckingCanceled(latch, GET_AUTOCOMPLETE_EVAL_TIMEOUT);
+
+                     PsiElement originalFileContext = originalFile.getContext();
+                     final int originalFileOffset = originalFileContext.getTextOffset() + originalFileContext.getText().length();
+
+                     String disambiguatePrefix = ";(() {";
+                     final StringBuilder sb = new StringBuilder();
+                     sb.append(disambiguatePrefix);
+                     if (vmServiceValue[0] != null) {
+                       // XXX USE (as instead)
+                       // We resolved the actual type of the expression to resolve. Yay!
+                       sb.append(UNIQUE_IMPORT_PREFIX);
+                       sb.append(".");
+                       sb.append(vmServiceValue[0].getInstanceRef().getClassRef().getName());
+                       sb.append(" ");
+                       sb.append(expressionToResolve);
+                       sb.append(";");
+                     }
+
+                     int autoCompleteOffset = offsetInOriginal + sb.length() + parameters.getOffset() + 1;
+                     int delta = 0;
+                     for (SourceEdit edit : editList) {
+                       assert(edit.getOffset() < autoCompleteOffset);
+                       delta += edit.getReplacement().length() - edit.getLength();
+                     }
+                     autoCompleteOffset += delta;
+
+                     sb.append(originalFile.getText());
+                     sb.append("})()\n");
+                     // TODO(jacobr): use final int offset = getOriginalOffset(virtualFile, _offset);
+
+                     System.out.println("XXXX  sb=" + sb.toString());
+                     editList.add(new SourceEdit(originalFileOffset, 0, sb.toString(), "FRAGMENT"));
+
+                     completionId = das.completion_getSuggestions(contextFile, editList, autoCompleteOffset);
+
+                     System.out.println("XXX LOOKUP... completionId = " + completionId);
+                   }
+                 }
+               }
+               if (completionId == null) {
+                 final int offset =
+                   InjectedLanguageManager.getInstance(project).injectedToHost(parameters.getOriginalFile(), parameters.getOffset());
+                 completionId = das.completion_getSuggestions(file, offset);
+               }
                if (completionId == null) return;
 
                final CompletionSorter sorter = createSorter(parameters, originalResultSet.getPrefixMatcher());

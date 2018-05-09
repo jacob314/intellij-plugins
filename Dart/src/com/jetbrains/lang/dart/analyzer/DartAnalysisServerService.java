@@ -25,6 +25,7 @@ import com.google.dart.server.utilities.logging.Logging;
 import com.google.gson.JsonObject;
 import com.intellij.codeInsight.intention.IntentionManager;
 import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.lang.injection.InjectedLanguageManager;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationInfo;
 import com.intellij.openapi.application.ApplicationManager;
@@ -58,6 +59,7 @@ import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiFileSystemItem;
 import com.intellij.psi.search.FilenameIndex;
 import com.intellij.psi.search.SearchScope;
@@ -449,8 +451,12 @@ public class DartAnalysisServerService implements Disposable {
       synchronized (myCompletionInfos) {
         CompletionInfo completionInfo;
         while ((completionInfo = myCompletionInfos.poll()) != null) {
-          if (!completionInfo.myCompletionId.equals(completionId)) continue;
-          if (!completionInfo.isLast) continue;
+          if (!completionInfo.myCompletionId.equals(completionId)) {
+            continue;
+          }
+          if (!completionInfo.isLast) {
+            continue;
+          }
 
           for (final CompletionSuggestion completion : completionInfo.myCompletions) {
             final int convertedReplacementOffset = getConvertedOffset(file, completionInfo.myOriginalReplacementOffset);
@@ -1305,6 +1311,75 @@ public class DartAnalysisServerService implements Disposable {
     return resultRef.get();
   }
 
+  String applyEdits(String text, List<SourceEdit> edits) {
+    final StringBuilder sb = new StringBuilder();
+    edits.sort(Comparator.comparingInt(SourceEdit::getOffset));
+    int current = 0;
+    for (SourceEdit edit : edits) {
+      sb.append(text.substring(current, edit.getOffset()));
+      sb.append(edit.getReplacement());
+      assert(current <= edit.getOffset() + edit.getLength());
+      current = edit.getOffset() + edit.getLength();
+    }
+    sb.append(text.substring(current));
+    return sb.toString();
+  }
+
+  @Nullable
+  public String completion_getSuggestions(@NotNull final PsiFile psiFile, List<SourceEdit> edits, int offsetInEditedFile) {
+    VirtualFile virtualFile = psiFile.getVirtualFile();
+    final String filePath = FileUtil.toSystemDependentName(virtualFile.getPath());
+    final Ref<String> resultRef = new Ref<>();
+
+    final AnalysisServer server = myServer;
+    if (server == null) {
+      return null;
+    }
+
+    final CountDownLatch latch = new CountDownLatch(1);
+
+    String originalText = psiFile.getText();
+
+    /// XXX HACKY.
+    final Map<String, Object> filesToUpdate = new THashMap<>();
+    String editText = applyEdits(originalText, edits);
+    System.out.println("XXX editText:\n" + editText);
+    System.out.println("XXX AUTOCOMPLETEPOINT: ###" + editText.substring(offsetInEditedFile));
+    System.out.println("----------------------");
+
+//    filesToUpdate.put(FileUtil.toSystemDependentName(filePath), new AddContentOverlay(sb.toString()));
+    filesToUpdate.put(filePath, new AddContentOverlay(editText));
+    //System.out.println("XXX NEWCONTNET:\n" + sb.toString());
+
+    server.analysis_updateContent(filesToUpdate, () -> {
+      server.analysis_updateContent(filesToUpdate, () -> {
+        server.completion_getSuggestions(filePath, offsetInEditedFile, new GetSuggestionsConsumer() {
+          @Override
+          public void computedCompletionId(@NotNull final String completionId) {
+            System.out.println("XXX FROMHELPER completitionId = " + completionId);
+            resultRef.set(completionId);
+            latch.countDown(); //XXX
+          }
+
+          @Override
+          public void onError(@NotNull final RequestError error) {
+            // Not a problem. Happens if a file is outside of the project, or server is just not ready yet.
+            latch.countDown(); //XXX
+          }
+        });
+
+      });
+    });
+
+    awaitForLatchCheckingCanceled(server, latch, GET_SUGGESTIONS_TIMEOUT);
+
+    // Cleanup the file we messed with
+    filesToUpdate.put(FileUtil.toSystemDependentName(filePath), new RemoveContentOverlay());
+    server.analysis_updateContent(filesToUpdate, latch::countDown);
+
+    return resultRef.get();
+  }
+
   @Nullable
   public FormatResult edit_format(@NotNull final VirtualFile file,
                                   final int _selectionOffset,
@@ -1947,7 +2022,7 @@ public class DartAnalysisServerService implements Disposable {
            ", error code = " + error.getCode() + ": " + error.getMessage();
   }
 
-  private static boolean awaitForLatchCheckingCanceled(@NotNull final AnalysisServer server,
+  public static boolean awaitForLatchCheckingCanceled(@NotNull final AnalysisServer server,
                                                        @NotNull final CountDownLatch latch,
                                                        long timeoutInMillis) {
     if (ApplicationManager.getApplication().isUnitTestMode()) {
