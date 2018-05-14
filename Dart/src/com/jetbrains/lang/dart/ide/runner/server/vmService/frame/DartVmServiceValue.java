@@ -18,6 +18,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
+import java.util.concurrent.CompletableFuture;
 
 // TODO: implement some combination of XValue.getEvaluationExpression() /
 // XValue.calculateEvaluationExpression() in order to support evaluate expression in variable values.
@@ -125,6 +126,44 @@ public class DartVmServiceValue extends XNamedValue {
         navigatable.setSourcePosition(null);
       }
     });
+  }
+
+  // XXX use
+  public CompletableFuture<Library> computeLibrary() {
+    CompletableFuture<Library> libraryFuture = new CompletableFuture<>();
+    myDebugProcess.getVmServiceWrapper().getObject(myIsolateId, myInstanceRef.getClassRef().getId(), new GetObjectConsumer() {
+      @Override
+      public void received(final Obj obj) {
+        ClassObj classObj = (ClassObj) obj;
+        myDebugProcess.getVmServiceWrapper().getObject(myIsolateId, classObj.getLibrary().getId(), new GetObjectConsumer() {
+          @Override
+          public void received(Obj response) {
+            libraryFuture.complete((Library)response);
+          }
+
+          @Override
+          public void received(Sentinel response) {
+            libraryFuture.complete(null);
+          }
+
+          @Override
+          public void onError(RPCError error) {
+            libraryFuture.complete(null);
+          }
+        });
+      }
+
+      @Override
+      public void received(final Sentinel response) {
+        libraryFuture.complete(null);
+      }
+
+      @Override
+      public void onError(final RPCError error) {
+        libraryFuture.complete(null);
+      }
+    });
+    return libraryFuture;
   }
 
   private static void reportSourcePosition(@NotNull final DartVmServiceDebugProcess debugProcess,

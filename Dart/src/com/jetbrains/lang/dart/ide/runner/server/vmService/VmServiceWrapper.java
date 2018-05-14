@@ -157,7 +157,7 @@ public class VmServiceWrapper implements Disposable {
     addRequest(() -> myVmService.getVM(consumer));
   }
 
-  private void getIsolate(@NotNull final String isolateId, @NotNull final GetIsolateConsumer consumer) {
+  public void getIsolate(@NotNull final String isolateId, @NotNull final GetIsolateConsumer consumer) {
     addRequest(() -> myVmService.getIsolate(isolateId, consumer));
   }
 
@@ -495,5 +495,32 @@ public class VmServiceWrapper implements Disposable {
                                       @NotNull final String expression,
                                       @NotNull final EvaluateConsumer consumer) {
     addRequest(() -> myVmService.evaluate(isolateId, targetId, expression, consumer));
+  }
+
+  public void evaluateInTargetContext(@NotNull final String isolateId,
+                                      @NotNull final String targetId,
+                                      @NotNull final String expression,
+                                      @NotNull final XDebuggerEvaluator.XEvaluationCallback callback) {
+    evaluateInTargetContext(isolateId, targetId, expression, new EvaluateConsumer() {
+      @Override
+      public void received(InstanceRef instanceRef) {
+        callback.evaluated(new DartVmServiceValue(myDebugProcess, isolateId, "result", instanceRef, null, null, false));
+      }
+
+      @Override
+      public void received(Sentinel sentinel) {
+        callback.errorOccurred(sentinel.getValueAsString());
+      }
+
+      @Override
+      public void received(ErrorRef errorRef) {
+        callback.errorOccurred(DartVmServiceEvaluator.getPresentableError(errorRef.getMessage()));
+      }
+
+      @Override
+      public void onError(RPCError error) {
+        callback.errorOccurred(error.getMessage());
+      }
+    });
   }
 }
