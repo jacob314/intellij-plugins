@@ -96,7 +96,7 @@ public class DartVmServiceStackFrame extends XStackFrame {
   @Override
   public void computeChildren(@NotNull final XCompositeNode node) {
     if (myException != null) {
-      final DartVmServiceValue exception = new DartVmServiceValue(myDebugProcess, myIsolateId, "exception", myException, null, null, true);
+      final DartVmServiceValue exception = myDebugProcess.createValue(myIsolateId, "exception", myException, null, null, true);
       node.addChildren(XValueChildrenList.singleton(exception), false);
     }
 
@@ -168,7 +168,7 @@ public class DartVmServiceStackFrame extends XStackFrame {
           "this".equals(var.getName())
           ? null
           : new DartVmServiceValue.LocalVarSourceLocation(myVmFrame.getLocation().getScript(), var.getDeclarationTokenPos());
-        childrenList.add(new DartVmServiceValue(myDebugProcess, myIsolateId, var.getName(), value, varLocation, null, false));
+        childrenList.add(myDebugProcess.createValue(myIsolateId, var.getName(), value, varLocation, null, false));
       }
     }
 

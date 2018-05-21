@@ -25,20 +25,25 @@ import javax.swing.*;
 
 public class DartVmServiceValue extends XNamedValue {
 
-  private static final LayeredIcon FINAL_FIELD_ICON = new LayeredIcon(AllIcons.Nodes.Field, AllIcons.Nodes.FinalMark);
-  private static final LayeredIcon STATIC_FIELD_ICON = new LayeredIcon(AllIcons.Nodes.Field, AllIcons.Nodes.StaticMark);
-  private static final LayeredIcon STATIC_FINAL_FIELD_ICON =
+  protected static final LayeredIcon FINAL_FIELD_ICON = new LayeredIcon(AllIcons.Nodes.Field, AllIcons.Nodes.FinalMark);
+  protected static final LayeredIcon STATIC_FIELD_ICON = new LayeredIcon(AllIcons.Nodes.Field, AllIcons.Nodes.StaticMark);
+  protected static final LayeredIcon STATIC_FINAL_FIELD_ICON =
     new LayeredIcon(AllIcons.Nodes.Field, AllIcons.Nodes.StaticMark, AllIcons.Nodes.FinalMark);
 
-  @NotNull private final DartVmServiceDebugProcess myDebugProcess;
-  @NotNull private final String myIsolateId;
-  @NotNull private final InstanceRef myInstanceRef;
-  @Nullable private final LocalVarSourceLocation myLocalVarSourceLocation;
-  @Nullable private final FieldRef myFieldRef;
-  private final boolean myIsException;
+  @NotNull protected final DartVmServiceDebugProcess myDebugProcess;
+  @NotNull protected final String myIsolateId;
+  @NotNull protected final InstanceRef myInstanceRef;
+  @Nullable protected final LocalVarSourceLocation myLocalVarSourceLocation;
+  @Nullable protected final FieldRef myFieldRef;
+  protected final boolean myIsException;
 
-  private final Ref<Integer> myCollectionChildrenAlreadyShown = new Ref<>(0);
+  protected final Ref<Integer> myCollectionChildrenAlreadyShown = new Ref<>(0);
 
+  /**
+   * Use DartVmServiceDebugProcess.createValue instead of calling this
+   * constructor directly so that the Flutter plugin can use a subclass of
+   * DartVmServiceValue that adds Flutter specific functionality.
+   */
   public DartVmServiceValue(@NotNull final DartVmServiceDebugProcess debugProcess,
                             @NotNull final String isolateId,
                             @NotNull final String name,
@@ -127,7 +132,7 @@ public class DartVmServiceValue extends XNamedValue {
     });
   }
 
-  private static void reportSourcePosition(@NotNull final DartVmServiceDebugProcess debugProcess,
+  protected static void reportSourcePosition(@NotNull final DartVmServiceDebugProcess debugProcess,
                                            @NotNull final XNavigatable navigatable,
                                            @NotNull final String isolateId,
                                            @Nullable final ScriptRef script,
@@ -153,7 +158,7 @@ public class DartVmServiceValue extends XNamedValue {
     // todo handle other special kinds: Type, TypeParameter, Pattern, may be some others as well
   }
 
-  private Icon getIcon() {
+  protected Icon getIcon() {
     if (myIsException) return AllIcons.Debugger.Db_exception_breakpoint;
 
     if (myFieldRef != null) {
@@ -184,7 +189,7 @@ public class DartVmServiceValue extends XNamedValue {
     return AllIcons.Debugger.Value;
   }
 
-  private boolean computeVarHavingStringValuePresentation(@NotNull final XValueNode node) {
+  protected boolean computeVarHavingStringValuePresentation(@NotNull final XValueNode node) {
     // getValueAsString() is provided for the instance kinds: Null, Bool, Double, Int, String (value may be truncated), Float32x4, Float64x2, Int32x4, StackTrace
     switch (myInstanceRef.getKind()) {
       case Null:
@@ -216,7 +221,7 @@ public class DartVmServiceValue extends XNamedValue {
     return true;
   }
 
-  private void addFullStringValueEvaluator(@NotNull final XValueNode node, @NotNull final InstanceRef stringInstanceRef) {
+  protected void addFullStringValueEvaluator(@NotNull final XValueNode node, @NotNull final InstanceRef stringInstanceRef) {
     assert stringInstanceRef.getKind() == InstanceKind.String : stringInstanceRef;
     node.setFullValueEvaluator(new XFullValueEvaluator() {
       @Override
@@ -242,7 +247,7 @@ public class DartVmServiceValue extends XNamedValue {
     });
   }
 
-  private boolean computeRegExpPresentation(@NotNull final XValueNode node) {
+  protected boolean computeRegExpPresentation(@NotNull final XValueNode node) {
     if (myInstanceRef.getKind() == InstanceKind.RegExp) {
       // The pattern is always an instance of kind String.
       final InstanceRef pattern = myInstanceRef.getPattern();
@@ -266,7 +271,7 @@ public class DartVmServiceValue extends XNamedValue {
     return false;
   }
 
-  private boolean computeMapPresentation(@NotNull final XValueNode node) {
+  protected boolean computeMapPresentation(@NotNull final XValueNode node) {
     if (myInstanceRef.getKind() == InstanceKind.Map) {
       final String value = "size = " + myInstanceRef.getLength();
       node.setPresentation(getIcon(), myInstanceRef.getClassRef().getName(), value, myInstanceRef.getLength() > 0);
@@ -275,7 +280,7 @@ public class DartVmServiceValue extends XNamedValue {
     return false;
   }
 
-  private boolean computeListPresentation(@NotNull final XValueNode node) {
+  protected boolean computeListPresentation(@NotNull final XValueNode node) {
     if (isListKind(myInstanceRef.getKind())) {
       final String value = "size = " + myInstanceRef.getLength();
       node.setPresentation(getIcon(), myInstanceRef.getClassRef().getName(), value, myInstanceRef.getLength() > 0);
@@ -284,7 +289,7 @@ public class DartVmServiceValue extends XNamedValue {
     return false;
   }
 
-  private void computeDefaultPresentation(@NotNull final XValueNode node) {
+  protected void computeDefaultPresentation(@NotNull final XValueNode node) {
     myDebugProcess.getVmServiceWrapper()
       .evaluateInTargetContext(myIsolateId, myInstanceRef.getId(), "toString()", new VmServiceConsumers.EvaluateConsumerWrapper() {
         @Override
@@ -341,7 +346,7 @@ public class DartVmServiceValue extends XNamedValue {
     }
   }
 
-  private void computeCollectionChildren(@NotNull final XCompositeNode node) {
+  protected void computeCollectionChildren(@NotNull final XCompositeNode node) {
     final int offset = myCollectionChildrenAlreadyShown.get();
     final int count = Math.min(myInstanceRef.getLength() - offset, XCompositeNode.MAX_CHILDREN_TO_SHOW);
 
@@ -377,7 +382,7 @@ public class DartVmServiceValue extends XNamedValue {
     });
   }
 
-  private void addListChildren(@NotNull final XCompositeNode node, @Nullable final ElementList<InstanceRef> listElements) {
+  protected void addListChildren(@NotNull final XCompositeNode node, @Nullable final ElementList<InstanceRef> listElements) {
     if (listElements == null) {
       node.addChildren(XValueChildrenList.EMPTY, true);
       return;
@@ -391,7 +396,7 @@ public class DartVmServiceValue extends XNamedValue {
     node.addChildren(childrenList, true);
   }
 
-  private void addMapChildren(@NotNull final XCompositeNode node, @NotNull final ElementList<MapAssociation> mapAssociations) {
+  protected void addMapChildren(@NotNull final XCompositeNode node, @NotNull final ElementList<MapAssociation> mapAssociations) {
     final XValueChildrenList childrenList = new XValueChildrenList(mapAssociations.size());
     int index = myCollectionChildrenAlreadyShown.get();
     for (MapAssociation mapAssociation : mapAssociations) {
@@ -419,7 +424,7 @@ public class DartVmServiceValue extends XNamedValue {
     node.addChildren(childrenList, true);
   }
 
-  private void addFields(@NotNull final XCompositeNode node, @NotNull final ElementList<BoundField> fields) {
+  protected void addFields(@NotNull final XCompositeNode node, @NotNull final ElementList<BoundField> fields) {
     final XValueChildrenList childrenList = new XValueChildrenList(fields.size());
     for (BoundField field : fields) {
       final InstanceRef value = field.getValue();
@@ -432,7 +437,7 @@ public class DartVmServiceValue extends XNamedValue {
   }
 
   @NotNull
-  private static String getShortPresentableValue(@NotNull final InstanceRef instanceRef) {
+  protected static String getShortPresentableValue(@NotNull final InstanceRef instanceRef) {
     // getValueAsString() is provided for the instance kinds: Null, Bool, Double, Int, String (value may be truncated), Float32x4, Float64x2, Int32x4, StackTrace
     switch (instanceRef.getKind()) {
       case String:
@@ -453,7 +458,7 @@ public class DartVmServiceValue extends XNamedValue {
     }
   }
 
-  private static boolean isListKind(@NotNull final InstanceKind kind) {
+  protected static boolean isListKind(@NotNull final InstanceKind kind) {
     // List, Uint8ClampedList, Uint8List, Uint16List, Uint32List, Uint64List, Int8List, Int16List, Int32List, Int64List, Float32List, Float64List, Int32x4List, Float32x4List, Float64x2List
     return kind == InstanceKind.List ||
            kind == InstanceKind.Uint8ClampedList ||
@@ -477,9 +482,9 @@ public class DartVmServiceValue extends XNamedValue {
     return myInstanceRef;
   }
 
-  static class LocalVarSourceLocation {
-    @NotNull private final ScriptRef myScriptRef;
-    private final int myTokenPos;
+  public static class LocalVarSourceLocation {
+    @NotNull protected final ScriptRef myScriptRef;
+    protected final int myTokenPos;
 
     public LocalVarSourceLocation(@NotNull final ScriptRef scriptRef, final int tokenPos) {
       myScriptRef = scriptRef;

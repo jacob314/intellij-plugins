@@ -38,6 +38,7 @@ import com.jetbrains.lang.dart.ide.runner.base.DartDebuggerEditorsProvider;
 import com.jetbrains.lang.dart.ide.runner.server.OpenDartObservatoryUrlAction;
 import com.jetbrains.lang.dart.ide.runner.server.vmService.frame.DartVmServiceStackFrame;
 import com.jetbrains.lang.dart.ide.runner.server.vmService.frame.DartVmServiceSuspendContext;
+import com.jetbrains.lang.dart.ide.runner.server.vmService.frame.DartVmServiceValue;
 import com.jetbrains.lang.dart.util.DartResolveUtil;
 import com.jetbrains.lang.dart.util.DartUrlResolver;
 import gnu.trove.THashMap;
@@ -584,5 +585,15 @@ public class DartVmServiceDebugProcess extends XDebugProcess {
     if (uri.startsWith("file:/")) return "file:///" + uri.substring("file:/".length());
     if (uri.startsWith("file:")) return "file:///" + uri.substring("file:".length());
     return uri;
+  }
+
+  @NotNull
+  public DartVmServiceValue createValue(@NotNull final String isolateId,
+                                        @NotNull final String name,
+                                        @NotNull final InstanceRef instanceRef,
+                                        @Nullable final DartVmServiceValue.LocalVarSourceLocation localVarSourceLocation,
+                                        @Nullable final FieldRef fieldRef,
+                                        boolean isException) {
+    return new DartVmServiceValue(this, isolateId, name, instanceRef, localVarSourceLocation, fieldRef, isException);
   }
 }
